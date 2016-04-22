@@ -3832,6 +3832,143 @@ static ENGINE_ERROR_CODE do_btree_elem_update(struct default_engine *engine, btr
     return ret;
 }
 
+#ifdef BTREE_DELETE_NO_MERGE
+static inline btree_indx_node *do_btree_get_first_leaf_fast(btree_indx_node *node, btree_elem_posi *path)
+{
+    while (node->ndepth > 0) {
+        path[node->ndepth].node = node;
+        path[node->ndepth].indx = 0;
+        node = (btree_indx_node *)(node->item[0]);
+    }
+    assert(node->ndepth == 0);
+    path[0].node = node;
+    path[0].indx = 0;
+    return (btree_indx_node *)node;
+}
+
+static void do_btree_node_unlink_fast(struct default_engine *engine, btree_meta_info *info,
+                                      btree_indx_node *p_node, btree_indx_node *c_node, int indx)
+{
+    if (c_node->prev != NULL)  c_node->prev = NULL;
+    if (c_node->next != NULL)  c_node->next = NULL;
+    p_node->used_count--;
+    p_node->item[indx] = NULL;
+    p_node->ecnt[indx] = 0;
+
+    if (info->stotal > 0) {
+        size_t stotal;
+        if (c_node->ndepth > 0) stotal = slabs_space_size(engine, sizeof(btree_indx_node));
+        else                    stotal = slabs_space_size(engine, sizeof(btree_leaf_node));
+        decrease_collection_space(engine, ITEM_TYPE_BTREE, (coll_meta_info *)info, stotal);
+    }
+
+    /* The amount of space to be decreased become different according to node depth.
+ *      * So, the btree node must be freed after collection space is decreased.
+ *           */
+    do_btree_node_free(engine, c_node);
+}
+
+static void do_btree_node_remove(struct default_engine *engine,
+                                 btree_meta_info *info, btree_elem_posi *path)
+{
+    btree_indx_node *node;
+    uint8_t btree_depth = 0;
+
+    node = path[btree_depth].node;
+    do {
+        if (node == info->root) break;
+        else                    node = path[btree_depth+1].node;
+        int i;
+        int ucnt = node->used_count;
+        for (i = 0; i < ucnt; i++){
+            btree_indx_node *childnode = (btree_indx_node *)node->item[i];
+            do_btree_node_unlink_fast(engine, info, node, childnode, i);
+        }
+
+        assert(node->used_count == 0);
+        if (node->next != NULL) {
+            node = node->next;
+        } else {
+            btree_depth++;
+            node = path[btree_depth].node;
+        }
+    } while (info->root->used_count == 0);
+
+    assert(node == info->root);
+    do_btree_node_unlink(engine, info, node, NULL);
+}
+
+static uint32_t do_btree_elem_delete_fast(struct default_engine *engine, btree_meta_info *info,
+                                          btree_delete_posi *cur_path, const uint32_t count)
+{
+    btree_elem_item *elem;
+    btree_indx_node *node;
+    int tot_found = 0; /* found count */
+    int stotal = 0;
+
+    if (info->root == NULL) {
+        return 0;
+    }
+
+    assert(info->root->ndepth < BTREE_MAX_DEPTH);
+
+    if (cur_path->cur_node == NULL) {
+        node = do_btree_get_first_leaf_fast(info->root, cur_path->path);
+    } else {
+        node = cur_path->cur_node;
+    }
+
+printf("tot_found = %d, info->ccnt : %d\n", tot_found, info->ccnt);
+
+    while (node != NULL) {
+        int i;
+        int ucnt = node->used_count;
+        for (i = 0; i < ucnt; i++) {
+            elem = (btree_elem_item *)node->item[i];
+            stotal += slabs_space_size(engine, do_btree_elem_ntotal(elem));
+
+            if (elem->refcount > 0) {
+                elem->status = BTREE_ITEM_STATUS_UNLINK;
+            } else {
+                elem->status = BTREE_ITEM_STATUS_FREE;
+                do_btree_elem_free(engine, elem);
+            }
+
+            node->item[i] = NULL;
+            node->used_count--;
+            tot_found++;
+        }
+        assert(node->used_count == 0);
+        if (node->next != NULL) { node = node->next; }
+        else                    { node = NULL; break; }
+
+        if (count > 0 && tot_found >= count) {
+            cur_path->cur_node = node;
+            info->ccnt -= tot_found;
+            if (info->stotal > 0) {
+               assert(stotal > 0 && stotal <= info->stotal);
+               decrease_collection_space(engine, ITEM_TYPE_BTREE, (coll_meta_info *)info, stotal);
+               return 0;
+            }
+        }
+    }
+
+    info->ccnt -= tot_found;
+printf("tot_found = %d, info->ccnt = %d\n", tot_found, info->ccnt);
+
+    if (info->stotal > 0) {
+        assert(stotal > 0 && stotal <= info->stotal);
+        decrease_collection_space(engine, ITEM_TYPE_BTREE, (coll_meta_info *)info, stotal);
+    }
+    if (node == NULL) {
+printf("info->ccnt is zero and node is NULL\n");
+        assert(info->ccnt == 0);
+        do_btree_node_remove(engine, info, cur_path->path);
+    }
+    return tot_found;
+}
+#endif
+
 static uint32_t do_btree_elem_delete(struct default_engine *engine, btree_meta_info *info,
                                      const int bkrtype, const bkey_range *bkrange,
                                      const eflag_filter *efilter, const uint32_t count,
@@ -5865,16 +6002,27 @@ static void *collection_delete_thread(void *arg)
             }
         }
         else if (IS_BTREE_ITEM(it)) {
-            bkey_range bkrange_space;
+            //bkey_range bkrange_space;
             bool dropped = false;
             btree_meta_info *info = (btree_meta_info *)item_get_meta(it);
+#ifdef BTREE_DELETE_NO_MERGE
+            btree_delete_posi cur_path;
+            cur_path.cur_node = NULL;
+#else
+            bkey_range bkrange_space;
             get_bkey_full_range(info->bktype, true, &bkrange_space);
+#endif
+
             while (dropped == false) {
                 pthread_mutex_lock(&engine->cache_lock);
                 info = (btree_meta_info *)item_get_meta(it);
                 //deleted_cnt = do_btree_elem_delete(engine, info, BKEY_RANGE_TYPE_ASC, &bkrange_space, NULL, 100);
+#ifdef BTREE_DELETE_NO_MERGE
+                (void)do_btree_elem_delete_fast(engine, info, &cur_path, 100);
+#else
                 (void)do_btree_elem_delete(engine, info, BKEY_RANGE_TYPE_ASC, &bkrange_space,
                                            NULL, 100, NULL, ELEM_DELETE_COLL);
+#endif
                 if (info->ccnt == 0) {
                     assert(info->root == NULL);
                     do_item_free(engine, it);
@@ -6847,7 +6995,7 @@ ENGINE_ERROR_CODE btree_elem_delete(struct default_engine *engine,
 {
     hash_item       *it;
     btree_meta_info *info;
-    int bkrtype = do_btree_bkey_range_type(bkrange);
+    //int bkrtype = do_btree_bkey_range_type(bkrange);
     ENGINE_ERROR_CODE ret;
 
     pthread_mutex_lock(&engine->cache_lock);
@@ -6862,8 +7010,16 @@ ENGINE_ERROR_CODE btree_elem_delete(struct default_engine *engine,
                 (info->bktype == BKEY_TYPE_BINARY && bkrange->from_nbkey == 0)) {
                 ret = ENGINE_EBADBKEY; break;
             }
+#ifdef BTREE_DELETE_NO_MERGE
+            btree_delete_posi cur_path;
+            cur_path.cur_node = NULL;
+
+            (void)do_btree_elem_delete_fast(engine, info, &cur_path, 0);
+
+#else
             *del_count = do_btree_elem_delete(engine, info, bkrtype, bkrange, efilter, req_count,
                                               access_count, ELEM_DELETE_NORMAL);
+#endif
             if (*del_count > 0) {
                 if (info->ccnt == 0 && drop_if_empty) {
                     assert(info->root == NULL);
