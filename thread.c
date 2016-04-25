@@ -525,6 +525,7 @@ void STATS_UNLOCK() {
 
 void threadlocal_stats_clear(struct thread_stats *stats) {
     stats->cmd_get = 0;
+    stats->cmd_delete = 0;
     stats->get_misses = 0;
     stats->delete_misses = 0;
     stats->incr_misses = 0;
@@ -646,6 +647,7 @@ void threadlocal_stats_aggregate(struct thread_stats *thread_stats, struct threa
         pthread_mutex_lock(&thread_stats[ii].mutex);
 
         stats->cmd_get += thread_stats[ii].cmd_get;
+        stats->cmd_delete += thread_stats[ii].cmd_delete;
         stats->get_misses += thread_stats[ii].get_misses;
         stats->delete_misses += thread_stats[ii].delete_misses;
         stats->decr_misses += thread_stats[ii].decr_misses;

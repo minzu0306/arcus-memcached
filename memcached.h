@@ -208,6 +208,7 @@ struct slab_stats {
 struct thread_stats {
     pthread_mutex_t   mutex;
     uint64_t          cmd_get;
+    uint64_t          cmd_delete;
     uint64_t          get_misses;
     uint64_t          delete_misses;
     uint64_t          incr_misses;
