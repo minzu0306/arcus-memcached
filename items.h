@@ -176,8 +176,6 @@ typedef struct _btree_elem_posi {
 typedef struct _btree_delete_posi {
     btree_elem_posi path[BTREE_MAX_DEPTH];
     btree_indx_node *cur_node;
-    uint16_t node_cnt;
-    uint16_t flag;
 } btree_delete_posi;
 #endif
 
