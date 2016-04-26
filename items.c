@@ -6685,6 +6685,7 @@ ENGINE_ERROR_CODE set_elem_delete(struct default_engine *engine,
         info = (set_meta_info *)item_get_meta(it);
 #ifdef SET_DELETE_NO_MERGE
         (void)do_set_elem_delete(engine, info, 0, ELEM_DELETE_COLL);
+        do_item_unlink(engine, it, ITEM_UNLINK_EMPTY);
 #else
         ret = do_set_elem_delete_with_value(engine, info, value, nbytes,
                                             ELEM_DELETE_NORMAL);
