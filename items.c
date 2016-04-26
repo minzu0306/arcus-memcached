@@ -7022,11 +7022,14 @@ ENGINE_ERROR_CODE btree_elem_delete(struct default_engine *engine,
 btree_delete_posi cur_path;
 cur_path.cur_node = NULL;
 (void)do_btree_elem_delete_fast(engine, info, &cur_path, 0);
+do_item_unlink(engine, it, ITEM_UNLINK_EMPTY);
+ret = ENGINE_SUCCESS;
+break;
 #else
 
             *del_count = do_btree_elem_delete(engine, info, bkrtype, bkrange, efilter, req_count,
                                               access_count, ELEM_DELETE_NORMAL);
-#endif
+
             if (*del_count > 0) {
                 if (info->ccnt == 0 && drop_if_empty) {
                     assert(info->root == NULL);
@@ -7038,6 +7041,7 @@ cur_path.cur_node = NULL;
             } else {
                 ret = ENGINE_ELEM_ENOENT;
             }
+#endif
         } while(0);
         do_item_release(engine, it);
     }
