@@ -2051,6 +2051,9 @@ static set_elem_item *do_set_elem_find(set_meta_info *info, const char *val, con
     return elem;
 }
 
+#ifdef SET_DELETE_NO_MERGE
+
+#else
 static ENGINE_ERROR_CODE do_set_elem_traverse_delete(struct default_engine *engine,
                                                      set_meta_info *info, set_hash_node *node,
                                                      const int hval, const char *val, const int vlen)
@@ -2109,7 +2112,7 @@ static ENGINE_ERROR_CODE do_set_elem_delete_with_value(struct default_engine *en
     }
     return ret;
 }
-
+#endif
 #ifdef SET_DELETE_NO_MERGE
 static uint32_t do_set_elem_traverse_fast(struct default_engine *engine, set_meta_info *info,
                                           set_hash_node *node, const uint32_t count)
@@ -6680,6 +6683,9 @@ ENGINE_ERROR_CODE set_elem_delete(struct default_engine *engine,
     ret = do_set_item_find(engine, key, nkey, false, &it);
     if (ret == ENGINE_SUCCESS) { /* it != NULL */
         info = (set_meta_info *)item_get_meta(it);
+#ifdef SET_DELETE_NO_MERGE
+        (void)do_set_elem_delete(engine, info, 0, ELEM_DELETE_COLL);
+#else
         ret = do_set_elem_delete_with_value(engine, info, value, nbytes,
                                             ELEM_DELETE_NORMAL);
         if (ret == ENGINE_SUCCESS) {
@@ -6688,6 +6694,7 @@ ENGINE_ERROR_CODE set_elem_delete(struct default_engine *engine,
                 *dropped = true;
             }
         }
+#endif
         do_item_release(engine, it);
     }
     pthread_mutex_unlock(&engine->cache_lock);
